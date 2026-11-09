@@ -1,0 +1,259 @@
+name: Build mod
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.7
+
+      - name: Create project files
+        run: |
+          mkdir -p src/main/java/com/example/decimalguiscale/mixin
+          mkdir -p src/main/resources
+
+          cat > settings.gradle <<'EOF'
+          pluginManagement {
+              repositories {
+                  maven { url = 'https://maven.fabricmc.net/' }
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          EOF
+
+          cat > gradle.properties <<'EOF'
+          org.gradle.jvmargs=-Xmx2G
+          minecraft_version=1.20.1
+          yarn_mappings=1.20.1+build.10
+          loader_version=0.15.11
+          fabric_version=0.92.2+1.20.1
+          EOF
+
+          cat > build.gradle <<'EOF'
+          plugins {
+              id 'fabric-loom' version '1.6-SNAPSHOT'
+          }
+
+          version = '1.0.0'
+          group = 'com.example'
+
+          base {
+              archivesName = 'decimalguiscale'
+          }
+
+          dependencies {
+              minecraft "com.mojang:minecraft:${project.minecraft_version}"
+              mappings "net.fabricmc:yarn:${project.yarn_mappings}:v2"
+              modImplementation "net.fabricmc:fabric-loader:${project.loader_version}"
+              modImplementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_version}"
+          }
+
+          tasks.withType(JavaCompile).configureEach {
+              it.options.release = 17
+          }
+
+          java {
+              sourceCompatibility = JavaVersion.VERSION_17
+              targetCompatibility = JavaVersion.VERSION_17
+          }
+          EOF
+
+          cat > src/main/resources/fabric.mod.json <<'EOF'
+          {
+            "schemaVersion": 1,
+            "id": "decimalguiscale",
+            "version": "1.0.0",
+            "name": "Decimal GUI Scale",
+            "description": "Use decimal GUI scale values like 2.5 or 3.3.",
+            "environment": "client",
+            "entrypoints": {
+              "client": ["com.example.decimalguiscale.DecimalGuiScaleClient"]
+            },
+            "mixins": ["decimalguiscale.mixins.json"],
+            "depends": {
+              "fabricloader": ">=0.14.21",
+              "minecraft": "1.20.1",
+              "java": ">=17",
+              "fabric-api": "*"
+            }
+          }
+          EOF
+
+          cat > src/main/resources/decimalguiscale.mixins.json <<'EOF'
+          {
+            "required": true,
+            "package": "com.example.decimalguiscale.mixin",
+            "compatibilityLevel": "JAVA_17",
+            "client": [
+              "WindowMixin",
+              "VideoOptionsScreenMixin"
+            ],
+            "injectors": {
+              "defaultRequire": 1
+            }
+          }
+          EOF
+
+          cat > src/main/java/com/example/decimalguiscale/DecimalGuiScaleClient.java <<'EOF'
+          package com.example.decimalguiscale;
+
+          import net.fabricmc.api.ClientModInitializer;
+          import net.fabricmc.loader.api.FabricLoader;
+          import net.minecraft.client.MinecraftClient;
+
+          import java.nio.file.Files;
+          import java.nio.file.Path;
+
+          public class DecimalGuiScaleClient implements ClientModInitializer {
+              public static double scale = 0.0;
+
+              private static final Path CONFIG = FabricLoader.getInstance().getConfigDir().resolve("decimalguiscale.txt");
+
+              @Override
+              public void onInitializeClient() {
+                  load();
+              }
+
+              public static void apply(double newScale) {
+                  scale = newScale;
+                  save();
+                  MinecraftClient.getInstance().onResolutionChanged();
+              }
+
+              private static void load() {
+                  try {
+                      if (Files.exists(CONFIG)) scale = Double.parseDouble(Files.readString(CONFIG).trim());
+                  } catch (Exception ignored) { scale = 0.0; }
+              }
+
+              private static void save() {
+                  try { Files.writeString(CONFIG, Double.toString(scale)); } catch (Exception ignored) { }
+              }
+          }
+          EOF
+
+          cat > src/main/java/com/example/decimalguiscale/DecimalScaleSlider.java <<'EOF'
+          package com.example.decimalguiscale;
+
+          import net.minecraft.client.MinecraftClient;
+          import net.minecraft.client.gui.widget.SliderWidget;
+          import net.minecraft.text.Text;
+
+          public class DecimalScaleSlider extends SliderWidget {
+              private static final double MIN = 0.5;
+              private static final double MAX = 6.0;
+
+              public DecimalScaleSlider(int x, int y, int width, int height) {
+                  super(x, y, width, height, Text.empty(), toSlider(current()));
+                  updateMessage();
+              }
+
+              private static double current() {
+                  return DecimalGuiScaleClient.scale > 0
+                          ? DecimalGuiScaleClient.scale
+                          : MinecraftClient.getInstance().getWindow().getScaleFactor();
+              }
+
+              private static double toSlider(double s) {
+                  return Math.max(0.0, Math.min(1.0, (s - MIN) / (MAX - MIN)));
+              }
+
+              private double fromSlider() {
+                  return Math.round((MIN + this.value * (MAX - MIN)) * 10.0) / 10.0;
+              }
+
+              @Override
+              protected void updateMessage() {
+                  setMessage(Text.literal("GUI Scale: " + fromSlider()));
+              }
+
+              @Override
+              protected void applyValue() {
+              }
+
+              @Override
+              public void onRelease(double mouseX, double mouseY) {
+                  super.onRelease(mouseX, mouseY);
+                  DecimalGuiScaleClient.apply(fromSlider());
+              }
+          }
+          EOF
+
+          cat > src/main/java/com/example/decimalguiscale/mixin/WindowMixin.java <<'EOF'
+          package com.example.decimalguiscale.mixin;
+
+          import com.example.decimalguiscale.DecimalGuiScaleClient;
+          import net.minecraft.client.util.Window;
+          import org.spongepowered.asm.mixin.Mixin;
+          import org.spongepowered.asm.mixin.injection.At;
+          import org.spongepowered.asm.mixin.injection.ModifyVariable;
+
+          @Mixin(Window.class)
+          public class WindowMixin {
+              @ModifyVariable(method = "setScaleFactor", at = @At("HEAD"), argsOnly = true)
+              private double decimalguiscale$override(double original) {
+                  return DecimalGuiScaleClient.scale > 0 ? DecimalGuiScaleClient.scale : original;
+              }
+          }
+          EOF
+
+          cat > src/main/java/com/example/decimalguiscale/mixin/VideoOptionsScreenMixin.java <<'EOF'
+          package com.example.decimalguiscale.mixin;
+
+          import com.example.decimalguiscale.DecimalGuiScaleClient;
+          import com.example.decimalguiscale.DecimalScaleSlider;
+          import net.minecraft.client.gui.screen.Screen;
+          import net.minecraft.client.gui.screen.option.VideoOptionsScreen;
+          import net.minecraft.client.gui.widget.ButtonWidget;
+          import net.minecraft.text.Text;
+          import org.spongepowered.asm.mixin.Mixin;
+          import org.spongepowered.asm.mixin.injection.At;
+          import org.spongepowered.asm.mixin.injection.Inject;
+          import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
+
+          @Mixin(VideoOptionsScreen.class)
+          public abstract class VideoOptionsScreenMixin extends Screen {
+              protected VideoOptionsScreenMixin(Text title) {
+                  super(title);
+              }
+
+              @Inject(method = "init", at = @At("TAIL"))
+              private void decimalguiscale$addSlider(CallbackInfo ci) {
+                  this.addDrawableChild(new DecimalScaleSlider(6, 2, 130, 18));
+                  this.addDrawableChild(ButtonWidget.builder(Text.literal("Reset"),
+                                  b -> DecimalGuiScaleClient.apply(0.0))
+                          .dimensions(140, 2, 44, 18)
+                          .build());
+              }
+          }
+          EOF
+
+      - name: Build
+        run: gradle build --no-daemon
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: decimalguiscale
+          path: build/libs/decimalguiscale-1.0.0.jar
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "v1.0.${{ github.run_number }}" build/libs/decimalguiscale-1.0.0.jar \
+            --title "Decimal GUI Scale build ${{ github.run_number }}" \
+            --notes "Fabric 1.20.1. Needs Fabric API."
