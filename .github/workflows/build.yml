@@ -248,5 +248,4 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: decimalguiscale
-          path: build/libs/decimalguiscale-1.0.0.jar 
-     # un
+          path: build/libs/decimalguiscale-1.0.0.jar
